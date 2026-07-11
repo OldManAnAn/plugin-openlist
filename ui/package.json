@@ -1,6 +1,6 @@
 {
   "name": "plugin-openlist-ui",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "private": true,
   "scripts": {
     "build": "vite build",
@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@halo-dev/api-client": "^2.22.0",
+    "@halo-dev/components": "^2.22.0",
     "@halo-dev/ui-shared": "^2.22.0",
     "axios": "^1.7.0"
   },

@@ -13,7 +13,7 @@ public class OpenListProperties {
 
     private String uploadPath = "";
 
-    private Object createDateFolders = Boolean.TRUE;
+    private Object createDateFolders = Boolean.FALSE;
 
     private String tokenEndpoint = "/api/auth/login";
 
@@ -56,7 +56,7 @@ public class OpenListProperties {
         if (createDateFolders instanceof String value) {
             return Boolean.parseBoolean(value);
         }
-        return true;
+        return false;
     }
 
     public void setCreateDateFolders(Object createDateFolders) {

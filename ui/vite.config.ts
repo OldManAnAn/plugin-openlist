@@ -12,6 +12,7 @@ export default defineConfig({
       name: "PluginOpenList",
       formats: ["iife"],
       fileName: () => "main.js",
+      cssFileName: "style",
     },
     rollupOptions: {
       external: [

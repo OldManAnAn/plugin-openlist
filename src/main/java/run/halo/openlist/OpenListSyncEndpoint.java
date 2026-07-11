@@ -97,7 +97,9 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
                         ServerResponse.ok().bodyValue(Map.of(
                             "added", added.get(),
                             "skipped", skipped.get(),
-                            "message", "sync completed"
+                            "message", "同步完成：新增 "
+                                + added.get() + " 个文件，跳过 "
+                                + skipped.get() + " 个已存在文件。"
                         ))
                     ));
             })
