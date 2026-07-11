@@ -59,27 +59,18 @@ public class OpenListAttachmentHandler implements AttachmentHandler {
                 var props = resolveProperties(ctx.configMap());
                 var file = ctx.file();
                 var originalName = file.filename();
-                var now = LocalDate.now();
-                var year = now.format(YEAR_FMT);
-                var month = now.format(MONTH_FMT);
                 var basePath = props.getNormalizedUploadPath();
-                var dirPath = basePath + "/" + year + "/" + month;
+                var dirPath = resolveUploadDir(props, basePath);
 
                 // 用 UUID 前缀避免同名覆盖
                 var safeName = UUID.randomUUID().toString()
                     .substring(0, 8) + "-" + originalName;
-                var remotePath = dirPath + "/" + safeName;
+                var remotePath = appendPath(dirPath, safeName);
 
                 // 从请求头获取文件大小，直接流式转发，不缓冲
                 var contentLength = file.headers().getContentLength();
 
-                return client.mkdir(props, dirPath)
-                    .onErrorResume(e -> {
-                        log.debug(
-                            "mkdir may already exist: {}",
-                            e.getMessage());
-                        return Mono.empty();
-                    })
+                return mkdirIfNeeded(props, dirPath)
                     .then(client.upload(
                         props, remotePath,
                         file.content(),
@@ -169,6 +160,38 @@ public class OpenListAttachmentHandler implements AttachmentHandler {
                 }
             })
             .orElseGet(OpenListProperties::new);
+    }
+
+    private String resolveUploadDir(OpenListProperties props,
+                                    String basePath) {
+        if (!props.isCreateDateFolders()) {
+            return basePath;
+        }
+        var now = LocalDate.now();
+        var year = now.format(YEAR_FMT);
+        var month = now.format(MONTH_FMT);
+        return appendPath(appendPath(basePath, year), month);
+    }
+
+    private Mono<Void> mkdirIfNeeded(OpenListProperties props,
+                                     String dirPath) {
+        if (!StringUtils.hasText(dirPath) || "/".equals(dirPath)) {
+            return Mono.empty();
+        }
+        return client.mkdir(props, dirPath)
+            .onErrorResume(e -> {
+                log.debug("mkdir may already exist: {}", e.getMessage());
+                return Mono.empty();
+            });
+    }
+
+    private String appendPath(String parent, String child) {
+        if (!StringUtils.hasText(parent) || "/".equals(parent)) {
+            return "/" + child;
+        }
+        return parent.endsWith("/")
+            ? parent + child
+            : parent + "/" + child;
     }
 
     private Mono<Attachment> buildAttachment(

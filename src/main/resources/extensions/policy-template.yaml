@@ -34,8 +34,18 @@ spec:
           name: uploadPath
           label: 上传根路径
           value: ""
-          help: "文件上传到 OpenList 的目录路径，例如 /zhouyi/blog。文件将存储在此路径下按年月自动分目录"
+          help: "文件上传到 OpenList 的目录路径，例如 /zhouyi/blog"
           validation: "required"
+        - $formkit: select
+          name: createDateFolders
+          label: 按年月自动分目录
+          value: "true"
+          options:
+            - label: 开启
+              value: "true"
+            - label: 关闭
+              value: "false"
+          help: "开启后文件会上传到 上传根路径/yyyy/MM；关闭后文件直接上传到上传根路径"
         - $formkit: text
           name: tokenEndpoint
           label: Token 接口路径

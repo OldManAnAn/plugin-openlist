@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'run.halo.openlist'
-version = '1.1.2'
+version = '1.1.4'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
@@ -31,6 +31,34 @@ dependencies {
     compileOnly 'io.projectreactor:reactor-core:3.7.6'
     compileOnly 'org.pf4j:pf4j:3.15.0'
     compileOnly 'tools.jackson.core:jackson-databind:3.0.4'
+}
+
+def npmCommand = System.getProperty('os.name').toLowerCase().contains('windows')
+    ? 'npm.cmd' : 'npm'
+
+tasks.register('npmInstall', Exec) {
+    workingDir = file('ui')
+    commandLine npmCommand, 'install'
+    inputs.files('ui/package.json', 'ui/package-lock.json')
+    outputs.dir('ui/node_modules')
+}
+
+tasks.register('buildUi', Exec) {
+    workingDir = file('ui')
+    commandLine npmCommand, 'run', 'build'
+    dependsOn tasks.named('npmInstall')
+    inputs.dir('ui/src')
+    inputs.files(
+        'ui/package.json',
+        'ui/package-lock.json',
+        'ui/vite.config.ts',
+        'ui/tsconfig.json'
+    )
+    outputs.file('src/main/resources/console/main.js')
+}
+
+tasks.named('processResources') {
+    dependsOn tasks.named('buildUi')
 }
 
 jar {
