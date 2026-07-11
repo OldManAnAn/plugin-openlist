@@ -2,8 +2,10 @@ package run.halo.openlist;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
@@ -28,7 +30,7 @@ import static org.springframework.web.reactive.function.server.RequestPredicates
 import static org.springframework.web.reactive.function.server.RouterFunctions.route;
 
 /**
- * 同步 OpenList 文件到 Halo 附件库的 API 端点。
+ * Sync OpenList files into Halo attachments.
  */
 @Component
 public class OpenListSyncEndpoint implements CustomEndpoint {
@@ -64,6 +66,10 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
 
     private Mono<ServerResponse> handleSync(ServerRequest request) {
         var policyName = request.queryParam("policyName").orElse("");
+        var cleanupDeleted = request.queryParam("cleanupDeleted")
+            .map(Boolean::parseBoolean)
+            .orElse(false);
+
         if (!StringUtils.hasText(policyName)) {
             return ServerResponse.badRequest()
                 .bodyValue(Map.of("message", "policyName is required"));
@@ -77,10 +83,9 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
                         "Policy has no configMap"));
                 }
                 return client.get(ConfigMap.class, configMapName)
-                    .map(cm -> Map.entry(policy, cm));
+                    .map(configMap -> Map.entry(policy, configMap));
             })
             .flatMap(entry -> {
-                var policy = entry.getKey();
                 var configMap = entry.getValue();
                 var props = resolveProperties(configMap);
                 var basePath = props.getNormalizedUploadPath();
@@ -90,16 +95,25 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
 
                 var added = new AtomicInteger(0);
                 var skipped = new AtomicInteger(0);
+                var deleted = new AtomicInteger(0);
+                var remotePaths = new HashSet<String>();
 
-                return scanAndSync(props, basePath, policyName,
-                    added, skipped)
+                return scanAndSync(props, basePath, policyName, added,
+                    skipped, remotePaths)
+                    .then(cleanupDeleted
+                        ? cleanupMissingAttachments(policyName, remotePaths,
+                            deleted)
+                        : Mono.empty())
                     .then(Mono.defer(() ->
                         ServerResponse.ok().bodyValue(Map.of(
                             "added", added.get(),
                             "skipped", skipped.get(),
+                            "deleted", deleted.get(),
+                            "cleanupDeleted", cleanupDeleted,
                             "message", "同步完成：新增 "
                                 + added.get() + " 个文件，跳过 "
-                                + skipped.get() + " 个已存在文件。"
+                                + skipped.get() + " 个已存在文件，清理 "
+                                + deleted.get() + " 个失效附件。"
                         ))
                     ));
             })
@@ -111,15 +125,13 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
             });
     }
 
-    /**
-     * 递归扫描目录并同步文件。
-     */
     private Mono<Void> scanAndSync(OpenListProperties props,
-                                    String dirPath,
-                                    String policyName,
-                                    AtomicInteger added,
-                                    AtomicInteger skipped) {
-        return openListClient.listFiles(props, dirPath)
+                                   String dirPath,
+                                   String policyName,
+                                   AtomicInteger added,
+                                   AtomicInteger skipped,
+                                   Set<String> remotePaths) {
+        return openListClient.listFiles(props, dirPath, true)
             .flatMapMany(Flux::fromIterable)
             .concatMap(item -> {
                 var fullPath = dirPath.endsWith("/")
@@ -127,30 +139,28 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
                     : dirPath + "/" + item.name();
                 if (item.isDir()) {
                     return scanAndSync(props, fullPath, policyName,
-                        added, skipped);
+                        added, skipped, remotePaths);
                 }
+                remotePaths.add(fullPath);
                 return syncFile(props, fullPath, item, policyName,
                     added, skipped);
             })
             .then();
     }
 
-    /**
-     * 同步单个文件：检查是否已存在，不存在则创建 Attachment。
-     */
     private Mono<Void> syncFile(OpenListProperties props,
-                                 String remotePath,
-                                 OpenListClient.FileItem item,
-                                 String policyName,
-                                 AtomicInteger added,
-                                 AtomicInteger skipped) {
-        // 查找是否已有此 remotePath 的附件
+                                String remotePath,
+                                OpenListClient.FileItem item,
+                                String policyName,
+                                AtomicInteger added,
+                                AtomicInteger skipped) {
         return client.list(Attachment.class,
-                a -> {
-                    var annos = a.getMetadata().getAnnotations();
-                    return annos != null
+                attachment -> {
+                    var annotations = attachment.getMetadata()
+                        .getAnnotations();
+                    return annotations != null
                         && remotePath.equals(
-                        annos.get(REMOTE_PATH_ANNO));
+                        annotations.get(REMOTE_PATH_ANNO));
                 }, null)
             .collectList()
             .flatMap(existing -> {
@@ -160,9 +170,33 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
                 }
                 return createAttachment(props, remotePath, item,
                     policyName)
-                    .doOnSuccess(a -> added.incrementAndGet())
+                    .doOnSuccess(attachment -> added.incrementAndGet())
                     .then();
             });
+    }
+
+    private Mono<Void> cleanupMissingAttachments(String policyName,
+                                                 Set<String> remotePaths,
+                                                 AtomicInteger deleted) {
+        return client.list(Attachment.class,
+                attachment -> {
+                    var spec = attachment.getSpec();
+                    var annotations = attachment.getMetadata()
+                        .getAnnotations();
+                    if (spec == null
+                        || !policyName.equals(spec.getPolicyName())
+                        || annotations == null
+                        || !annotations.containsKey(REMOTE_PATH_ANNO)) {
+                        return false;
+                    }
+                    var remotePath = annotations.get(REMOTE_PATH_ANNO);
+                    return !remotePaths.contains(remotePath);
+                }, null)
+            .concatMap(attachment -> client.delete(attachment)
+                .doOnSuccess(deletedAttachment ->
+                    deleted.incrementAndGet())
+                .then())
+            .then();
     }
 
     private Mono<Attachment> createAttachment(
@@ -202,13 +236,15 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
     }
 
     private String buildPermalink(OpenListProperties props,
-                                   String remotePath) {
+                                  String remotePath) {
         var segments = remotePath.split("/");
         var sb = new StringBuilder();
-        for (var seg : segments) {
-            if (seg.isEmpty()) continue;
+        for (var segment : segments) {
+            if (segment.isEmpty()) {
+                continue;
+            }
             sb.append("/");
-            sb.append(URLEncoder.encode(seg, StandardCharsets.UTF_8)
+            sb.append(URLEncoder.encode(segment, StandardCharsets.UTF_8)
                 .replace("+", "%20"));
         }
         return props.getNormalizedSiteUrl() + "/d" + sb;
@@ -219,14 +255,30 @@ public class OpenListSyncEndpoint implements CustomEndpoint {
         if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
             return "image/jpeg";
         }
-        if (lower.endsWith(".png")) return "image/png";
-        if (lower.endsWith(".gif")) return "image/gif";
-        if (lower.endsWith(".webp")) return "image/webp";
-        if (lower.endsWith(".svg")) return "image/svg+xml";
-        if (lower.endsWith(".mp4")) return "video/mp4";
-        if (lower.endsWith(".mp3")) return "audio/mpeg";
-        if (lower.endsWith(".pdf")) return "application/pdf";
-        if (lower.endsWith(".zip")) return "application/zip";
+        if (lower.endsWith(".png")) {
+            return "image/png";
+        }
+        if (lower.endsWith(".gif")) {
+            return "image/gif";
+        }
+        if (lower.endsWith(".webp")) {
+            return "image/webp";
+        }
+        if (lower.endsWith(".svg")) {
+            return "image/svg+xml";
+        }
+        if (lower.endsWith(".mp4")) {
+            return "video/mp4";
+        }
+        if (lower.endsWith(".mp3")) {
+            return "audio/mpeg";
+        }
+        if (lower.endsWith(".pdf")) {
+            return "application/pdf";
+        }
+        if (lower.endsWith(".zip")) {
+            return "application/zip";
+        }
         return "application/octet-stream";
     }
 

@@ -27,11 +27,14 @@ import { isAxiosError, type AxiosError } from "axios";
 type SyncResult = {
   added: number;
   skipped: number;
+  deleted?: number;
+  cleanupDeleted?: boolean;
   message?: string;
 };
 
 type PolicyConfig = {
   createDateFolders?: boolean | string;
+  cleanupDeleted?: boolean | string;
   [key: string]: unknown;
 };
 
@@ -43,7 +46,8 @@ const syncResult = ref<SyncResult>();
 const clientError = ref("");
 const policyConfig = ref<PolicyConfig>({});
 const loadingPolicyConfig = ref(false);
-const savingDateFolders = ref(false);
+const savingCreateDateFolders = ref(false);
+const savingCleanupDeleted = ref(false);
 
 const selectedPolicy = computed(() =>
   policies.value.find((policy) => policy.metadata.name === selectedPolicyName.value),
@@ -53,6 +57,10 @@ const createDateFolders = computed(() =>
   isEnabled(policyConfig.value.createDateFolders),
 );
 
+const cleanupDeleted = computed(() =>
+  isEnabled(policyConfig.value.cleanupDeleted),
+);
+
 function isEnabled(value: unknown) {
   return value === true || value === "true";
 }
@@ -60,7 +68,9 @@ function isEnabled(value: unknown) {
 function getSyncResultMessage(result: SyncResult) {
   return (
     result.message ||
-    `同步完成：新增 ${result.added} 个文件，跳过 ${result.skipped} 个已存在文件。`
+    `同步完成：新增 ${result.added} 个文件，跳过 ${result.skipped} 个已存在文件，清理 ${
+      result.deleted || 0
+    } 个失效附件。`
   );
 }
 
@@ -126,18 +136,15 @@ async function loadPolicyConfig(policyName: string) {
   }
 }
 
-async function updateCreateDateFolders(value: boolean) {
-  if (!selectedPolicyName.value || savingDateFolders.value) {
-    return;
+async function savePolicyConfig(
+  nextConfig: PolicyConfig,
+  successMessage: string,
+) {
+  if (!selectedPolicyName.value) {
+    return false;
   }
 
-  savingDateFolders.value = true;
   clientError.value = "";
-
-  const nextConfig = {
-    ...policyConfig.value,
-    createDateFolders: value,
-  };
 
   try {
     await consoleApiClient.storage.policy.updatePolicyConfigByGroup({
@@ -147,26 +154,63 @@ async function updateCreateDateFolders(value: boolean) {
     });
 
     policyConfig.value = nextConfig;
-    Toast.success(value ? "已开启按年月自动分目录" : "已关闭按年月自动分目录");
+    Toast.success(successMessage);
+    return true;
   } catch (error) {
     if (!isAxiosError(error)) {
       clientError.value =
         error instanceof Error ? error.message : "保存 OpenList 策略配置失败";
     }
-  } finally {
-    savingDateFolders.value = false;
+    return false;
   }
 }
 
-async function syncOpenList() {
+async function updateCreateDateFolders(value: boolean) {
+  if (savingCreateDateFolders.value) {
+    return;
+  }
+
+  savingCreateDateFolders.value = true;
+
+  await savePolicyConfig(
+    {
+      ...policyConfig.value,
+      createDateFolders: value,
+    },
+    value ? "已开启按年月自动分目录" : "已关闭按年月自动分目录",
+  );
+
+  savingCreateDateFolders.value = false;
+}
+
+async function updateCleanupDeleted(value: boolean) {
+  if (savingCleanupDeleted.value) {
+    return;
+  }
+
+  savingCleanupDeleted.value = true;
+
+  await savePolicyConfig(
+    {
+      ...policyConfig.value,
+      cleanupDeleted: value,
+    },
+    value ? "已开启同步清理失效附件" : "已关闭同步清理失效附件",
+  );
+
+  savingCleanupDeleted.value = false;
+}
+
+function syncOpenList() {
   if (!selectedPolicyName.value || syncing.value) {
     return;
   }
 
   Dialog.warning({
     title: "同步 OpenList 文件",
-    description:
-      "将扫描所选存储策略配置的 OpenList 目录，并把未登记的文件写入 Halo 附件库。",
+    description: cleanupDeleted.value
+      ? "将扫描 OpenList 目录，导入新增文件，并删除 Halo 附件库中远端已不存在的附件记录。"
+      : "将扫描 OpenList 目录，并把未登记的文件写入 Halo 附件库。",
     showCancel: true,
     confirmText: "开始同步",
     cancelText: "取消",
@@ -190,6 +234,7 @@ async function doSyncOpenList() {
       {
         params: {
           policyName: selectedPolicyName.value,
+          cleanupDeleted: cleanupDeleted.value,
         },
       },
     );
@@ -320,7 +365,7 @@ watch(selectedPolicyName, (policyName) => {
               <span class="switch-line">
                 <VSwitch
                   :disabled="!selectedPolicyName || loadingPolicyConfig"
-                  :loading="savingDateFolders"
+                  :loading="savingCreateDateFolders"
                   :model-value="createDateFolders"
                   @update:model-value="updateCreateDateFolders"
                 />
@@ -329,6 +374,23 @@ watch(selectedPolicyName, (policyName) => {
                     createDateFolders
                       ? "开启，文件会进入上传根路径/yyyy/MM"
                       : "关闭，文件会直接进入上传根路径"
+                  }}
+                </span>
+              </span>
+            </VDescriptionItem>
+            <VDescriptionItem label="清理失效附件">
+              <span class="switch-line">
+                <VSwitch
+                  :disabled="!selectedPolicyName || loadingPolicyConfig"
+                  :loading="savingCleanupDeleted"
+                  :model-value="cleanupDeleted"
+                  @update:model-value="updateCleanupDeleted"
+                />
+                <span>
+                  {{
+                    cleanupDeleted
+                      ? "开启，同步时会删除远端已不存在的 Halo 附件记录"
+                      : "关闭，同步只新增和跳过，不删除 Halo 附件记录"
                   }}
                 </span>
               </span>
@@ -414,12 +476,7 @@ watch(selectedPolicyName, (policyName) => {
   font-size: 13px;
 }
 
-.status-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
+.status-line,
 .switch-line {
   display: inline-flex;
   align-items: center;

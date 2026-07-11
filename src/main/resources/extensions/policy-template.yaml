@@ -41,6 +41,11 @@ spec:
           label: 按年月自动分目录
           value: false
           help: "开启后文件会上传到 上传根路径/yyyy/MM；关闭后文件直接上传到上传根路径"
+        - $formkit: switch
+          name: cleanupDeleted
+          label: 同步时清理远端已删除文件
+          value: false
+          help: "开启后，同步会删除 Halo 附件库中已不存在于 OpenList 远端目录的附件记录"
         - $formkit: text
           name: tokenEndpoint
           label: Token 接口路径

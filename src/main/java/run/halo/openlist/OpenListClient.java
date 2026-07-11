@@ -230,18 +230,28 @@ public class OpenListClient {
     @SuppressWarnings("unchecked")
     public Mono<java.util.List<FileItem>> listFiles(
         OpenListProperties props, String path) {
+        return listFiles(props, path, false);
+    }
+
+    /**
+     * List files under a path, optionally forcing OpenList to refresh.
+     */
+    @SuppressWarnings("unchecked")
+    public Mono<java.util.List<FileItem>> listFiles(
+        OpenListProperties props, String path, boolean refresh) {
         return getToken(props).flatMap(token ->
-            doListFiles(props, token, path)
+            doListFiles(props, token, path, refresh)
                 .onErrorResume(
                     WebClientResponseException.Unauthorized.class,
                     e -> refreshToken(props).flatMap(newToken ->
-                        doListFiles(props, newToken, path)))
+                        doListFiles(props, newToken, path, refresh)))
         );
     }
 
     @SuppressWarnings("unchecked")
     private Mono<java.util.List<FileItem>> doListFiles(
-        OpenListProperties props, String token, String path) {
+        OpenListProperties props, String token, String path,
+        boolean refresh) {
         var url = props.getNormalizedSiteUrl() + "/api/fs/list";
         return webClient.post()
             .uri(url)
@@ -251,7 +261,7 @@ public class OpenListClient {
                 "path", path,
                 "page", 1,
                 "per_page", 10000,
-                "refresh", false
+                "refresh", refresh
             ))
             .retrieve()
             .bodyToMono(ApiResponse.class)
